@@ -1,0 +1,3 @@
+# tui.py / tui-win.py 均为纯标准库单文件脚本, 无需依赖即可运行
+# 可选: 安装 PyYAML 后「修改写回 config.yaml」功能可用
+PyYAML>=5.4

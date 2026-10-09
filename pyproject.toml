@@ -1,0 +1,14 @@
+[project]
+name = "clashtop"
+version = "0.1.0"
+description = "mihomo 控制台 TUI —— Clash Verge 轻量平替 (纯标准库, 支持鼠标)"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.optional-dependencies]
+# 「修改写回 config.yaml」需要: uv sync --extra yaml
+yaml = ["PyYAML>=5.4"]
+
+# 单文件脚本应用, 不作为可安装包
+[tool.uv]
+package = false

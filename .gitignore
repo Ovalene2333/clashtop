@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行时生成 / 含敏感信息的本地文件
+config.yaml
+config.yaml.bak
+subscription.url
+subscription*.yaml
+.tui.json
+.usage.json
+*.tui.tmp
+*.tmp
+*.log
+
+# 托管模式本地产物 (自备的二进制, 不发布)
+/mihomo
+/mihomo.exe
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+
+# 本机截图脚本 (依赖特定 WT 环境, 不发布)
+_screenshot.py
+
