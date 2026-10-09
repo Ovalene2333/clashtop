@@ -3,6 +3,14 @@
 mihomo 控制台 TUI —— Clash Verge 的轻量终端平替。**纯标准库单文件脚本, 零必装依赖**,
 键盘 + 鼠标完整可用, 支持 Windows 命名管道控制器 (适配 Clash Verge)。
 
+![代理](docs/screenshot1.png)
+
+| 连接 | 规则 |
+|:-:|:-:|
+| ![连接](docs/screenshot2.png) | ![规则](docs/screenshot3.png) |
+| **日志** | **设置** |
+| ![日志](docs/screenshot4.png) | ![设置](docs/screenshot5.png) |
+
 | 文件 | 说明 |
 |---|---|
 | `tui.py` | 主程序, 跨平台 (Windows / Linux / macOS), **唯一源码** |

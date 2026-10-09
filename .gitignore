@@ -17,3 +17,7 @@ subscription.url
 .idea/
 .vscode/
 .DS_Store
+
+# 本机截图脚本 (依赖特定 WT 环境, 不发布)
+_screenshot.py
+
