@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行时生成 / 含敏感信息的本地文件
+config.yaml
+subscription.url
+.tui.json
+*.tui.tmp
+*.tmp
+*.log
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
