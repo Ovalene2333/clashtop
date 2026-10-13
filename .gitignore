@@ -7,11 +7,17 @@ venv/
 
 # 运行时生成 / 含敏感信息的本地文件
 config.yaml
+config.yaml.bak
 subscription.url
+subscription*.yaml
 .tui.json
 *.tui.tmp
 *.tmp
 *.log
+
+# 托管模式本地产物 (自备的二进制, 不发布)
+/mihomo
+/mihomo.exe
 
 # 编辑器 / 系统
 .idea/

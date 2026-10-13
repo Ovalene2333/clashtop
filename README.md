@@ -36,18 +36,45 @@ python tui-win.py             # Windows (独立分发版, 等价)
 常见端口 9097/9090。需要密钥而配置里没有时, 启动时提示输入并记住。
 
 ```
-用法: tui.py [-a ADDR | --host HOST -p PORT] [-s KEY] [代理组名]
+用法: tui.py [-a ADDR | --host HOST -p PORT] [-s KEY] [--managed] [代理组名]
 
   -a, --api ADDR   控制器地址 http://127.0.0.1:9097, 或 pipe:管道名 / pipe:auto
   --host HOST      控制器主机 (默认 127.0.0.1)
   -p, --port PORT  控制器端口 (默认 9097)
   -s, --secret KEY API 密钥
+  --managed        托管模式 (后台拉起本地内核, 需自备二进制)
+  --core PATH      内核二进制路径 (仅托管模式)
+  --workdir DIR    内核工作目录 (仅托管模式, 配置与日志落在此处)
+  --config PATH    配置文件路径 (仅托管模式)
   代理组名          启动时选中的代理组 (默认自动选择)
 
 环境变量: MIHOMO_API  MIHOMO_HOST  MIHOMO_PORT  MIHOMO_SECRET
+  CLASHTOP_MANAGED / MIHOMO_MANAGED (=1 开托管)  MIHOMO_CORE
+  CLASHTOP_WORKDIR / MIHOMO_WORKDIR  MIHOMO_CONFIG
 ```
 
 `pipe:auto` 自动枚举 `\\.\pipe\` 下 `verge-mihomo-*` / `*mihomo*` 命名管道。
+
+## 运行模式
+
+- **仅管理模式（默认）**：只连接已在运行的内核（Clash Verge / Mihomo Party / 手动启动的
+  mihomo），不拉起进程、不下载任何东西。离线时显示重试页，每 3 秒自动重试；
+  确认本机没有内核时，可点「改用托管模式」(`S`) 当场切换（需自备二进制）。
+- **托管模式（`--managed` / `CLASHTOP_MANAGED=1`）**：后台拉起本地 mihomo 进程并常驻
+  （退出 TUI 不杀进程，日志落到工作目录 `mihomo.log`）：
+
+```bash
+python tui.py --managed                 # 二进制已存在则直接拉起
+python tui.py --managed --core ./mihomo # 指定内核路径（或 MIHOMO_CORE）
+python tui.py --managed --workdir DIR   # 指定工作目录（配置与日志落在此处）
+```
+
+托管模式行为：需自备 mihomo 二进制（放 `PATH` / 脚本目录 / 工作目录，或
+`--core` / `MIHOMO_CORE` 指定；本工具不提供内核下载）；缺 `config.yaml`
+时生成最小可用配置（含 `external-controller: 127.0.0.1:9097`）；既有配置缺
+该项时自动补一行；`u` 更新订阅在没有 `update.sh` 时走内置下载
+（`subscription.url`，完整配置则备份替换 `config.yaml` 并重载）；
+`R` 重启失败时自动改走拉起。
 
 ## 界面
 
@@ -63,18 +90,22 @@ python tui-win.py             # Windows (独立分发版, 等价)
 
 常用键: `↑↓/jk` 移动 · `←→/hl` 切换焦点 · `⏎` 确认 · `Esc` 返回 · `/` 筛选 · `?` 帮助 · `q` 退出
 
-全局键: `m` 切换模式 · `T` TUN 开关 · `a` 局域网共享 · `u` 更新订阅 · `R` 重启内核 · `r` 刷新
+全局键: `c` 连接页 · `m` 切换模式 · `T` TUN 开关 · `a` 局域网共享 · `u` 更新订阅 · `R` 重启内核 · `t` 连通测试 · `r` 刷新
 
 鼠标: 单击导航/代理组/节点/按钮/开关/分段选项即生效, 滚轮滚动列表。
 
 ## 会读写的文件
 
-均位于脚本同目录 (除自动探测到的前端配置外):
+默认位于脚本同目录 (`--workdir` / `--config` 可改托管模式的位置):
 
 - `config.yaml` — mihomo 内核配置; 开启「修改写回配置文件」后, 运行时修改会合并写回
   (需 PyYAML; 原子替换写入)
-- `subscription.url` — 订阅地址, `u` 更新订阅时读取
+- `config.yaml.bak` — 内置订阅下载替换完整配置前自动备份
+- `subscription.url` — 订阅地址, `u` 更新订阅时读取 (可多行, `#` 注释)
+- `subscription.yaml` — 内置下载的非完整配置片段落在此处, 需在 `config.yaml` 中引用
 - `update.sh` / `update.bat` / `update.cmd` / `update.ps1` — 订阅更新脚本, 按序探测执行
+  (有脚本时优先用脚本, 托管模式无脚本才走内置下载)
+- `mihomo.log` — 托管模式拉起的内核日志 (工作目录下)
 - `.tui.json` — 界面偏好 (测速地址/超时/并发、日志等级等) 与上次成功的控制器连接缓存
 
 ## 开发
@@ -93,7 +124,9 @@ python _gen_tuiwin.py        # 重新生成 tui-win.py
 
 | 节 | 内容 |
 |---|---|
-| 数据层 | `api()` REST 封装、命名管道传输 (`pipe:`)、控制器自动探测、偏好读写 |
+| 数据层 | `api()` REST 封装、偏好读写、订阅脚本选择、写回 `config.yaml` |
+| 托管模式 | 内核查找、配置补齐、订阅下载、后台拉起 |
+| 命名管道 / 控制器探测 | Windows 命名管道传输 (`pipe:`)、`external-controller` 自动探测 |
 | 文本宽度 | `cw/tw/clip/wrap` —— CJK 宽字符与组合字符处理 |
 | 绘制基础 | 终端层 `Term` (基类 `_TermBase` 帧缓冲 + `_WinTerm`/`_PosixTerm`)、`Theme`、`Hits`、`Canvas`、`ListView` |
 | 弹窗 | `Modal` 及 Confirm/Input/Select/Info 弹窗 |

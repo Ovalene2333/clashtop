@@ -14,13 +14,17 @@
 
 鼠标: 点击导航、代理组、节点 (单击即切换)、按钮、开关、分段选项; 滚轮滚动列表.
 常用键: ↑↓/jk 移动  ←→/hl 切换焦点  ⏎ 确认  / 筛选  ? 帮助  q 退出
-全局键: m 切换模式  T TUN  a 局域网共享  u 更新订阅  R 重启内核  r 刷新
+全局键: c 连接页  m 切换模式  T TUN  a 局域网共享  u 更新订阅  R 重启内核  t 连通测试  r 刷新
 用法: tui.py [--api URL | --host HOST --port PORT | pipe:名称] [--secret KEY] [代理组名]
   所有参数均可省略, 默认自动探测控制器地址 / 密钥 / 代理组:
     上次成功的连接 → Clash Verge 等前端与 mihomo 配置里的 external-controller / secret
     → 常见端口 9097 9090; 需要密钥而配置里没有时, 启动时提示输入并记住
   pipe:xxx  使用 Windows 命名管道连接内核 (pipe:auto 自动探测, 适配 Clash Verge)
+  --managed  托管模式: 后台拉起本地 mihomo 内核 (需自备二进制, 不提供下载);
+    缺省为仅管理模式 (只连接已在运行的内核, 不拉起进程);
+    另有 --core/--workdir/--config 指定内核与路径 (仅托管模式)
 环境变量: MIHOMO_API  MIHOMO_HOST MIHOMO_PORT MIHOMO_SECRET
+  CLASHTOP_MANAGED/MIHOMO_MANAGED  MIHOMO_CORE  CLASHTOP_WORKDIR/MIHOMO_WORKDIR  MIHOMO_CONFIG
 """
 import argparse, calendar, ctypes, getpass, http.client, json, locale, os, queue, re, shutil, subprocess
 import sys, threading, time, unicodedata, urllib.parse, urllib.request
@@ -48,6 +52,11 @@ CONFIG_FILE = os.path.join(HERE, "config.yaml")
 UPDATE = os.path.join(HERE, "update.sh")
 SUB_FILE = os.path.join(HERE, "subscription.url")
 PREFS_FILE = os.path.join(HERE, ".tui.json")
+MANAGED = False    # 托管模式: 后台拉起本地内核 (默认 False, 仅管理已运行的内核)
+CORE_BIN = ""      # --core / MIHOMO_CORE 显式指定的内核路径
+WORK_DIR = HERE    # --workdir 内核工作目录 (默认脚本目录)
+CORE_PROC = None   # 托管模式拉起的子进程 (退出时不杀, 常驻后台)
+CORE_LOG = os.path.join(HERE, "mihomo.log")
 START_GROUP = None   # 命令行位置参数指定的代理组; None 时自动选择 (见 default_group)
 
 GROUP_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance", "Relay"}
@@ -140,6 +149,167 @@ def persist_config(patch):
         with open(tmp, "w", encoding="utf-8") as f:
             yaml.dump(doc, f, Dumper=dumper, allow_unicode=True, sort_keys=False)
         os.replace(tmp, CONFIG_FILE)
+
+
+# ─── 托管模式: 内核拉起 / 配置补齐 / 订阅下载 (纯标准库, 跨平台) ───
+# 说明: 本工具不提供 mihomo 二进制下载, 需用户自备 (见 NO_CORE_MSG).
+
+NO_CORE_MSG = ("未找到 mihomo 内核, 本工具不提供下载服务; "
+               "请自行下载二进制后放到 PATH / 脚本目录 / 工作目录, 或用 --core 指定路径")
+MINIMAL_CONFIG = """\
+# 由 clashtop 托管模式生成, 可自行修改
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: false
+external-controller: 127.0.0.1:9097
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - 223.5.5.5
+    - 8.8.8.8
+proxies: []
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,PROXY
+"""
+
+
+def find_core():
+    """定位 mihomo 二进制: 显式参数 > 环境变量 > PATH > 脚本目录 > 工作目录."""
+    for c in (CORE_BIN, os.environ.get("MIHOMO_CORE")):
+        if c and os.path.isfile(c):
+            return c
+    w = shutil.which("mihomo")
+    if w:
+        return w
+    names = ["mihomo.exe" if IS_WIN else "mihomo"]
+    for d in (HERE, WORK_DIR):
+        for n in names:
+            p = os.path.join(d, n)
+            if os.path.isfile(p):
+                return p
+    return ""
+
+
+def core_status():
+    """返回 (binary, pid_or_None, config_ok, controller_url)."""
+    b = find_core()
+    pid = None
+    if CORE_PROC is not None and CORE_PROC.poll() is None:
+        pid = CORE_PROC.pid
+    cfg = read_controller_cfg(CONFIG_FILE)
+    return b, pid, bool(os.path.isfile(CONFIG_FILE)), _controller_url(cfg.get("external-controller"))
+
+
+def ensure_core_config():
+    """托管模式保证 config.yaml 存在且含 external-controller; 返回控制器地址."""
+    if not os.path.isfile(CONFIG_FILE):
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            f.write(MINIMAL_CONFIG)
+        return "http://127.0.0.1:9097"
+    cfg = read_controller_cfg(CONFIG_FILE)
+    if not cfg.get("external-controller"):
+        try:
+            with open(CONFIG_FILE, "a", encoding="utf-8") as f:
+                f.write("\nexternal-controller: 127.0.0.1:9097\n")
+        except OSError:
+            pass
+        return "http://127.0.0.1:9097"
+    return _controller_url(cfg.get("external-controller"))
+
+
+def start_core():
+    """托管模式拉起内核 (已在运行则复用); 等待控制器就绪后返回 api 地址."""
+    global CORE_PROC, CORE_LOG
+    ctl = ensure_core_config()
+    b = find_core()
+    if not b:
+        raise RuntimeError(NO_CORE_MSG)
+    # 控制器已通则无需拉起
+    try:
+        api("GET", "/version", timeout=2)
+        return API
+    except Exception:
+        pass
+    if not os.path.isdir(WORK_DIR):
+        os.makedirs(WORK_DIR, exist_ok=True)
+    logf = open(os.path.join(WORK_DIR, "mihomo.log"), "ab")
+    args = [b, "-f", CONFIG_FILE]
+    try:
+        if IS_WIN:
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            CORE_PROC = subprocess.Popen(args, cwd=WORK_DIR, stdout=logf, stderr=subprocess.STDOUT,
+                                         stdin=subprocess.DEVNULL, creationflags=flags)
+        else:
+            CORE_PROC = subprocess.Popen(args, cwd=WORK_DIR, stdout=logf, stderr=subprocess.STDOUT,
+                                         stdin=subprocess.DEVNULL, start_new_session=True)
+    finally:
+        try:
+            logf.close()
+        except Exception:
+            pass
+    last = None
+    for _ in range(30):
+        time.sleep(0.5)
+        try:
+            api("GET", "/version", timeout=2)
+            return API
+        except Exception as e:
+            last = e
+        if CORE_PROC.poll() is not None:
+            raise RuntimeError("内核进程已退出 (code=%s), 详见 mihomo.log" % CORE_PROC.returncode)
+    raise RuntimeError("内核 15 秒内未就绪: %s" % last)
+
+
+def download_subscription(progress=None):
+    """内置订阅下载 (托管模式无 update.sh 时用): 读 subscription.url 逐行下载.
+
+    完整 clash 配置 (含 proxies:/proxy-providers:) 则备份并替换 config.yaml;
+    否则存为 subscription.yaml 待用户在配置中引用. 返回 (kind, path)."""
+    try:
+        with open(SUB_FILE, encoding="utf-8") as f:
+            urls = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
+    except OSError:
+        urls = []
+    if not urls:
+        raise RuntimeError("未配置订阅地址 (subscription.url)")
+    saved = []
+    for i, u in enumerate(urls):
+        if progress:
+            progress("下载订阅 %d/%d" % (i + 1, len(urls)))
+        req = urllib.request.Request(u, headers={"User-Agent": "clash-verge/v2"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = r.read()
+        head = data[:4096].lower()
+        if b"proxies:" in head or b"proxy-providers:" in head or b"proxy_groups:" in head or b"proxy-groups:" in head:
+            bak = CONFIG_FILE + ".bak"
+            try:
+                if os.path.isfile(CONFIG_FILE):
+                    shutil.copyfile(CONFIG_FILE, bak)
+            except OSError:
+                pass
+            tmp = CONFIG_FILE + ".sub.tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, CONFIG_FILE)
+            saved.append(("config", CONFIG_FILE))
+        else:
+            name = "subscription.yaml" if len(urls) == 1 else "subscription%d.yaml" % (i + 1)
+            p = os.path.join(HERE, name)
+            tmp = p + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, p)
+            saved.append(("snippet", p))
+    return saved[0]
 
 
 def fmt_bytes(n):
@@ -685,6 +855,13 @@ def resolve_controller(api=None, secret=None):
 def setup_controller(args):
     """按命令行/环境变量 + 自动探测确定 API / API_PIPE / SECRET / START_GROUP."""
     global API, API_PIPE, SECRET, START_GROUP, CONTROLLER_DESC
+    apply_managed_args(args)
+    if MANAGED and not args.api and not args.host and not args.port:
+        # 托管模式先保证本地配置存在, 使探测/回退地址与实际拉起的内核一致
+        try:
+            ensure_core_config()
+        except OSError:
+            pass
     api = args.api
     if not api and (args.host or args.port):
         api = "http://%s:%d" % (args.host or "127.0.0.1", args.port or 9097)
@@ -3038,16 +3215,27 @@ class App:
     def update_sub(self):
         def run():
             cmd = update_cmd()
-            if cmd is None:
-                raise RuntimeError("找不到可执行的更新脚本 (update.sh + bash / update.bat / update.ps1)")
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                 text=True, encoding="utf-8", errors="replace", cwd=HERE)
-            for line in p.stdout:
-                line = line.strip()
-                if line:
-                    self.ui(lambda l=line: (self.progress.__setitem__("update", l),
-                                            self.add_log("info", "[update] " + l)))
-            return p.wait()
+            if cmd is not None:
+                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, encoding="utf-8", errors="replace", cwd=HERE)
+                for line in p.stdout:
+                    line = line.strip()
+                    if line:
+                        self.ui(lambda l=line: (self.progress.__setitem__("update", l),
+                                                self.add_log("info", "[update] " + l)))
+                return p.wait()
+            if MANAGED:
+                kind, path = download_subscription(
+                    lambda s: self.ui(lambda: (self.progress.__setitem__("update", s),
+                                               self.add_log("info", "[update] " + s))))
+                if kind == "config":
+                    try:
+                        api("PUT", "/configs?force=true", {"path": CONFIG_FILE}, timeout=30)
+                    except Exception:
+                        pass
+                    return 0
+                raise RuntimeError("订阅已保存为 %s, 需在 config.yaml 中引用后重载" % os.path.basename(path))
+            raise RuntimeError("找不到可执行的更新脚本 (update.sh + bash / update.bat / update.ps1)")
 
         def done(ok, res):
             if ok and res == 0:
@@ -3077,6 +3265,13 @@ class App:
                 api("POST", "/restart", {})
             except Exception:
                 pass
+            if MANAGED:
+                # API 重启失败 (进程不在了) 则直接拉起
+                try:
+                    api("GET", "/version", timeout=2)
+                except Exception:
+                    start_core()
+                    return True
             time.sleep(1)
             for _ in range(30):
                 try:
@@ -3084,12 +3279,55 @@ class App:
                     return True
                 except Exception:
                     time.sleep(0.5)
+            if MANAGED:
+                try:
+                    start_core()
+                    return True
+                except Exception:
+                    pass
             return False
 
         def done(ok, res):
             self.toast("内核已重启" if res else "内核未在 15 秒内恢复, 请检查进程", "ok" if res else "bad")
             self.refresh()
         self.task("restart", "重启内核", run, done)
+
+    # ---- 托管模式操作 ----
+    def managed_primary_action(self):
+        self.start_managed_core()
+
+    def start_managed_core(self):
+        def run():
+            start_core()
+            return True
+
+        def done(ok, res):
+            self.toast("内核已启动" if ok else f"启动失败: {res}", "ok" if ok else "bad")
+            self.refresh()
+        self.task("core", "启动内核", run, done)
+
+    def ask_switch_managed(self):
+        self.modal(ConfirmModal(
+            "切换到托管模式",
+            "将在后台拉起本地 mihomo 内核并常驻 (退出 TUI 不杀进程)。"
+            "需自备二进制 (PATH / 脚本目录 / 工作目录 / --core); "
+            "缺 config.yaml 时生成最小配置。下次可直接用 --managed 启动。",
+            self.switch_to_managed, yes="切换"))
+
+    def switch_to_managed(self):
+        global MANAGED, API, SECRET, CONTROLLER_DESC
+        MANAGED = True
+        try:
+            url = ensure_core_config()
+        except OSError as e:
+            self.toast(f"配置文件不可写: {e}", "bad")
+            return
+        cfg = read_controller_cfg(CONFIG_FILE)
+        API = url.rstrip("/")
+        SECRET = cfg.get("secret") or ""
+        CONTROLLER_DESC = "%s  [托管模式]" % API
+        self.toast("已切换到托管模式", "ok")
+        self.start_managed_core()
 
     # ---- 后台流 ----
     def add_log(self, level, msg):
@@ -3269,8 +3507,24 @@ class App:
         c.put(y + h // 2 - 2, x + 4, f"{sp} 正在连接 mihomo 控制器 {API}", "accent", bold=True)
         if self.error:
             c.put(y + h // 2, x + 4, "上次错误: " + self.error, "bad", w=w - 8)
+        if MANAGED:
+            b, pid, cfg_ok, _ = core_status()
+            info = "内核: %s  配置: %s  %s" % (
+                b or "未找到 (不提供下载, 请自备二进制)",
+                "就绪" if cfg_ok else "将自动生成",
+                ("运行中 pid=%s" % pid) if pid else "未运行")
+            c.put(y + h // 2 + 1, x + 4, info, "dim", w=w - 8)
+            bx = x + 4
+            bx += self.button(y + h // 2 + 3, bx, "启动内核",
+                              self.managed_primary_action, key="S") + 2
+            bx += self.button(y + h // 2 + 3, bx, "更新订阅", self.update_sub, key="u") + 2
+            self.button(y + h // 2 + 3, bx, "立即重试", lambda: self.refresh(False), key="r")
+        else:
             c.put(y + h // 2 + 1, x + 4, "请确认内核已启动 (--api/--port/--secret 指定控制器), 每 3 秒自动重试", "dim", w=w - 8)
-        self.button(y + h // 2 + 3, x + 4, "立即重试", lambda: self.refresh(False), key="r")
+            bx = x + 4
+            bx += self.button(y + h // 2 + 3, bx, "立即重试", lambda: self.refresh(False), key="r") + 2
+            if not API_PIPE:
+                self.button(y + h // 2 + 3, bx, "改用托管模式", self.ask_switch_managed, key="S")
 
     def draw_footer(self, y, W):
         c = self.c
@@ -3386,6 +3640,13 @@ class App:
         elif k == "r":
             self.refresh(False)
         elif self.proxies is None:
+            if k == "S" and not API_PIPE:
+                if MANAGED:
+                    self.managed_primary_action()
+                else:
+                    self.ask_switch_managed()
+            elif MANAGED and k == "u":
+                self.update_sub()
             return
         elif k == "c":
             self.show(self.pages[1])
@@ -3455,7 +3716,32 @@ def parse_args():
                    help="控制器端口, 默认 9097 (环境变量 MIHOMO_PORT); --api/MIHOMO_API 存在时无效")
     p.add_argument("-s", "--secret", metavar="KEY", default=env("MIHOMO_SECRET"),
                    help="API 密钥 (环境变量 MIHOMO_SECRET); 默认从配置文件读取")
+    p.add_argument("--managed", action="store_true",
+                   default=(env("CLASHTOP_MANAGED") or env("MIHOMO_MANAGED") or "") in ("1", "true", "yes", "on"),
+                   help="托管模式: 后台拉起本地 mihomo 内核 (需自备二进制, 不提供下载); "
+                        "缺省为仅管理模式 (只连已运行的内核). 也可用 CLASHTOP_MANAGED=1")
+    p.add_argument("--core", metavar="PATH", default=env("MIHOMO_CORE"),
+                   help="内核二进制路径 (默认自动查找 PATH / 脚本目录 / 工作目录); 仅托管模式用")
+    p.add_argument("--workdir", metavar="DIR", default=env("CLASHTOP_WORKDIR") or env("MIHOMO_WORKDIR"),
+                   help="内核工作目录 (默认脚本目录, mihomo.log 落在此处); 仅托管模式用")
+    p.add_argument("--config", metavar="PATH", default=env("MIHOMO_CONFIG"),
+                   help="配置文件路径 (默认 <workdir>/config.yaml); 仅托管模式用")
     return p.parse_args()
+
+
+def apply_managed_args(args):
+    """应用托管模式的路径参数, 覆盖 CONFIG_FILE / WORK_DIR / CORE_BIN / MANAGED."""
+    global MANAGED, CORE_BIN, WORK_DIR, CONFIG_FILE, CORE_LOG
+    MANAGED = bool(args.managed)
+    if args.core:
+        CORE_BIN = args.core
+    if args.workdir:
+        WORK_DIR = args.workdir
+    if args.config:
+        CONFIG_FILE = args.config
+    elif args.workdir:
+        CONFIG_FILE = os.path.join(WORK_DIR, "config.yaml")
+    CORE_LOG = os.path.join(WORK_DIR, "mihomo.log")
 
 
 def main():
@@ -3473,7 +3759,16 @@ def main():
 
 
 if __name__ == "__main__":
-    setup_controller(parse_args())
+    _args = parse_args()
+    setup_controller(_args)
+    if MANAGED and not API_PIPE:
+        # 托管模式: 二进制已存在则后台拉起; 缺二进制时不阻塞启动,
+        # 由离线页的 [启动内核] 显示自备指引
+        try:
+            if find_core():
+                start_core()
+        except Exception as e:
+            print("托管内核启动失败: %s (可在离线页重试)" % e)
     try:
         locale.setlocale(locale.LC_ALL, "")
     except locale.Error:

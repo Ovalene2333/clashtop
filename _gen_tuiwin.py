@@ -25,7 +25,7 @@ NEW_DOC = '''#!/usr/bin/env python3
 
 鼠标: 点击导航、代理组、节点 (单击即切换)、按钮、开关、分段选项; 滚轮滚动列表.
 常用键: ↑↓/jk 移动  ←→/hl 切换焦点  ⏎ 确认  / 筛选  ? 帮助  q 退出
-全局键: m 切换模式  T TUN  a 局域网共享  u 更新订阅  R 重启内核  r 刷新
+全局键: c 连接页  m 切换模式  T TUN  a 局域网共享  u 更新订阅  R 重启内核  t 连通测试  r 刷新
 
 用法: tui-win.py [--api URL | --host HOST --port PORT | pipe:名称] [--secret KEY] [代理组名]
   所有参数均可省略, 默认自动探测控制器地址 / 密钥 / 代理组:
@@ -36,6 +36,7 @@ NEW_DOC = '''#!/usr/bin/env python3
   --host    控制器主机, 默认 127.0.0.1 (环境变量 MIHOMO_HOST)
   --port    控制器端口, 默认 9097 (环境变量 MIHOMO_PORT)
   --secret  API 密钥 (环境变量 MIHOMO_SECRET)
+  --managed 托管模式: 后台拉起本地内核, 需自备二进制 (默认仅管理已运行的内核)
 例: python tui-win.py        python tui-win.py -a pipe:auto -s 123
 """
 '''
