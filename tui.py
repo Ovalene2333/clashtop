@@ -1657,23 +1657,37 @@ class Modal:
 class ConfirmModal(Modal):
     def __init__(self, title, text, on_yes, yes="确定", danger=False):
         self.title, self.text, self.on_yes, self.yes, self.danger = title, text, on_yes, yes, danger
+        self.sel = 1  # 0=取消, 1=确定; 默认停在确定, 回车行为与原来一致
 
     def draw(self, app):
         lines = wrap(self.text, min(app.c.size()[1] - 8, self.width - 4))
         y, x, h, w = self.frame(app, len(lines) + 5, self.title)
         for i, l in enumerate(lines):
             app.c.put(y + 1 + i, x + 2, l, "white", "bg_modal")
-        self.buttons(app, y + h - 2, x, w, [("取消", app.close_modal, "normal"),
-                                             (self.yes, self.ok, "danger" if self.danger else "primary")])
+        cancel_kind = "primary" if self.sel == 0 else "normal"
+        ok_kind = ("danger" if self.danger else "primary") if self.sel == 1 else "normal"
+        self.buttons(app, y + h - 2, x, w, [("取消", app.close_modal, cancel_kind),
+                                             (self.yes, lambda: self.ok(app), ok_kind)])
 
-    def ok(self):
-        app_close = self.on_yes
-        APP.close_modal()
-        app_close()
+    def ok(self, app):
+        app.close_modal()
+        self.on_yes()
+
+    def activate(self, app):
+        if self.sel == 1:
+            self.ok(app)
+        else:
+            app.close_modal()
 
     def key(self, app, k):
-        if k in ("enter", "y", "Y"):
-            self.ok()
+        if k in ("left", "h"):
+            self.sel = 0
+        elif k in ("right", "l"):
+            self.sel = 1
+        elif k in ("enter", "space"):
+            self.activate(app)
+        elif k in ("y", "Y"):
+            self.ok(app)
         elif k in ("esc", "n", "N", "q"):
             app.close_modal()
 
@@ -1703,16 +1717,16 @@ class InputModal(Modal):
         if self.err:
             c.put(y + 4, x + 2, "✗ " + self.err, "bad", "bg_modal", w=fw)
         self.buttons(app, y + h - 2, x, w, [("取消", app.close_modal, "normal"),
-                                             ("确定", self.submit, "primary")])
+                                             ("确定", lambda: self.submit(app), "primary")])
 
-    def submit(self):
+    def submit(self, app):
         text = "".join(self.buf).strip()
         try:
             val = self.parse(text) if self.parse else text
         except ValueError as e:
             self.err = str(e) or "输入无效"
             return
-        APP.close_modal()
+        app.close_modal()
         self.on_submit(val)
 
     def key(self, app, k):
@@ -1721,7 +1735,7 @@ class InputModal(Modal):
             app.close_modal()
             return
         if k == "enter":
-            self.submit()
+            self.submit(app)
             return
         if k == "backspace":
             if self.cur:
@@ -1773,10 +1787,11 @@ class SelectModal(Modal):
             app.c.put(yy, x + 2, "●" if val == self.current else "○",
                       "ok" if val == self.current else "muted", bg)
             app.c.put(yy, x + 4, label, "white", bg, bold=sel, w=w - 7)
-        self.lv.draw(app, y + 2, x + 1, h - 4, w - 3, n, item, click=self.pick, sb_x=x + w - 1)
+        self.lv.draw(app, y + 2, x + 1, h - 4, w - 3, n, item,
+                     click=lambda i: self.pick(app, i), sb_x=x + w - 1)
 
-    def pick(self, i):
-        APP.close_modal()
+    def pick(self, app, i):
+        app.close_modal()
         self.on_pick(self.options[i][1])
 
     def key(self, app, k):
@@ -1786,7 +1801,7 @@ class SelectModal(Modal):
         elif k in ("down", "j"):
             self.lv.move(1, n)
         elif k in ("enter", "space"):
-            self.pick(self.lv.sel)
+            self.pick(app, self.lv.sel)
         elif k in ("esc", "q"):
             app.close_modal()
 
@@ -3516,7 +3531,7 @@ class App:
             c.put(y + h // 2 + 1, x + 4, info, "dim", w=w - 8)
             bx = x + 4
             bx += self.button(y + h // 2 + 3, bx, "启动内核",
-                              self.managed_primary_action, key="S") + 2
+                              self.managed_primary_action, key="s") + 2
             bx += self.button(y + h // 2 + 3, bx, "更新订阅", self.update_sub, key="u") + 2
             self.button(y + h // 2 + 3, bx, "立即重试", lambda: self.refresh(False), key="r")
         else:
@@ -3524,7 +3539,7 @@ class App:
             bx = x + 4
             bx += self.button(y + h // 2 + 3, bx, "立即重试", lambda: self.refresh(False), key="r") + 2
             if not API_PIPE:
-                self.button(y + h // 2 + 3, bx, "改用托管模式", self.ask_switch_managed, key="S")
+                self.button(y + h // 2 + 3, bx, "改用托管模式", self.ask_switch_managed, key="s")
 
     def draw_footer(self, y, W):
         c = self.c
@@ -3640,7 +3655,7 @@ class App:
         elif k == "r":
             self.refresh(False)
         elif self.proxies is None:
-            if k == "S" and not API_PIPE:
+            if k in ("s", "S") and not API_PIPE:
                 if MANAGED:
                     self.managed_primary_action()
                 else:

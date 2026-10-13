@@ -16,6 +16,7 @@ mihomo 控制台 TUI —— Clash Verge 的轻量终端平替。**纯标准库�
 | `tui.py` | 主程序, 跨平台 (Windows / Linux / macOS), **唯一源码** |
 | `tui-win.py` | Windows 专用版, 由 `_gen_tuiwin.py` 从 `tui.py` 生成, 可独立分发 |
 | `_gen_tuiwin.py` | 生成器, 见下文「开发」 |
+| `shot.py` | 自动化截图 (dev-only, 需 Pillow): 内置假 mihomo 服务 + 无头驱动 + PNG 渲染 |
 
 ## 运行要求
 
@@ -59,7 +60,7 @@ python tui-win.py             # Windows (独立分发版, 等价)
 
 - **仅管理模式（默认）**：只连接已在运行的内核（Clash Verge / Mihomo Party / 手动启动的
   mihomo），不拉起进程、不下载任何东西。离线时显示重试页，每 3 秒自动重试；
-  确认本机没有内核时，可点「改用托管模式」(`S`) 当场切换（需自备二进制）。
+  确认本机没有内核时，可点「改用托管模式」(`s`) 当场切换（需自备二进制）。
 - **托管模式（`--managed` / `CLASHTOP_MANAGED=1`）**：后台拉起本地 mihomo 进程并常驻
   （退出 TUI 不杀进程，日志落到工作目录 `mihomo.log`）：
 
@@ -146,6 +147,9 @@ SGR 鼠标由 `_seq_event()` 解析。
 python -m py_compile tui.py && python _gen_tuiwin.py && python -m py_compile tui-win.py
 python tui.py --help
 ```
+
+`docs/screenshot1~5.png` 用 `python shot.py` 重抓 (假服务 + 确定性数据, 两次运行逐字节一致);
+`python shot.py offline confirm help` 抓附加状态到 `docs/shots/`。
 
 POSIX 输入解析可在任意平台单测 (`_seq_event` / `_PosixTerm._keys` 不依赖 termios 即可调用,
 它们只是被注释标记圈起来、运行时才经 `else` 导入)。
